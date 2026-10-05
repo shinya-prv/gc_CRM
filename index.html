@@ -183,7 +183,7 @@
         </div>
       </div>
       <p id="preview-banner" class="hidden mt-2 text-[11px] bg-cta/90 text-dark font-bold rounded-lg px-2 py-1 text-center">
-        プレビューモード：ダミーデータを表示しています（GAS_WEB_APP_URLを設定すると実データに反映）
+        プレビューモード：ダミーデータを表示しています（任意のメールとパスワードでログインできます）
       </p>
     </header>
 
@@ -354,12 +354,29 @@
   </div>
 </div>
 
-<div id="user-modal" class="hidden fixed inset-0 z-[80] modal-backdrop flex items-end md:items-center justify-center">
-  <div class="bg-white w-full max-w-md rounded-t-2xl md:rounded-2xl p-5">
-    <p class="font-heading font-bold text-dark text-sm mb-1">あなたは誰ですか？</p>
-    <p class="text-xs text-dark/60 mb-3">一度選択すると、次回以降は自動的に記入者として使用されます。</p>
-    <div id="user-modal-list" class="space-y-2 max-h-64 overflow-y-auto"></div>
-    <button id="user-modal-close" class="w-full mt-3 py-2.5 rounded-xl border-2 border-light text-dark/60 font-bold text-sm">閉じる</button>
+<div id="login-modal" class="hidden fixed inset-0 z-[80] modal-backdrop flex items-end md:items-center justify-center">
+  <form id="login-form" class="bg-white w-full max-w-md rounded-t-2xl md:rounded-2xl p-5 safe-bottom md:pb-5" novalidate>
+    <p class="font-heading font-bold text-dark text-base mb-1">ログイン</p>
+    <p class="text-xs text-dark/60 mb-4">登録済みのメールアドレスと、共通パスワードを入力してください。</p>
+    <label for="login-email" class="block text-xs font-bold text-dark mb-1">メールアドレス</label>
+    <input id="login-email" type="email" autocomplete="username" inputmode="email" autocapitalize="off" spellcheck="false"
+      class="w-full rounded-xl border border-light px-3 py-2.5 text-sm mb-3 focus:outline-none focus:ring-2 focus:ring-sub">
+    <label for="login-password" class="block text-xs font-bold text-dark mb-1">パスワード</label>
+    <input id="login-password" type="password" autocomplete="current-password"
+      class="w-full rounded-xl border border-light px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-sub">
+    <p id="login-error" class="hidden text-[11px] text-red-500 font-bold mt-2" role="alert"></p>
+    <button id="login-submit" type="submit" class="w-full mt-4 py-3 rounded-xl bg-main text-white font-bold text-sm shadow-md active:scale-[.98] transition disabled:opacity-60">ログイン</button>
+  </form>
+</div>
+
+<div id="account-modal" class="hidden fixed inset-0 z-[80] modal-backdrop flex items-end md:items-center justify-center">
+  <div class="bg-white w-full max-w-md rounded-t-2xl md:rounded-2xl p-5 safe-bottom md:pb-5">
+    <p class="text-xs text-dark/60 mb-1">ログイン中</p>
+    <p id="account-name" class="font-heading font-bold text-dark text-base mb-4"></p>
+    <div class="flex gap-2">
+      <button id="account-close" class="flex-1 py-2.5 rounded-xl border-2 border-light text-dark/60 font-bold text-sm">閉じる</button>
+      <button id="account-logout" class="flex-1 py-2.5 rounded-xl border-2 border-red-200 text-red-500 font-bold text-sm">ログアウト</button>
+    </div>
   </div>
 </div>
 
@@ -379,45 +396,43 @@
 </div>
 
 <script>
-const IS_GAS = (typeof google !== 'undefined' && google.script && google.script.run);
-
 /**
- * ここに、Code.gs を「ウェブアプリとしてデプロイ（実行ユーザー:自分／アクセスできるユーザー:全員）」
- * した際に発行される URL（.../exec で終わるもの）を貼り付けてください。
- * これを設定すると、Vercel等の外部ホスティングに置いた本HTMLからでも
- * 同じスプレッドシートのデータを fetch() 経由で読み書きできるようになります。
- * 空のままにすると、ダミーデータによるプレビューモードで動作します。
+ * Code.gs を「ウェブアプリ」としてデプロイした URL（.../exec）。
+ * デプロイ設定：次のユーザーとして実行＝自分／アクセスできるユーザー＝全員
+ * （誰でもURLに届くが、ログインしていないとデータは一切返らない）
+ * 空にすると、ダミーデータによるプレビューモードで動作します。
  */
 const GAS_WEB_APP_URL = 'https://script.google.com/macros/s/AKfycbwWvLGFJeO99s6X56BYMU6XzISkDZn0YWudVNOokiSKpGEV2xSsyHV9cMN5MunP0NXI/exec';
 
-const IS_LIVE_BACKEND = IS_GAS || !!GAS_WEB_APP_URL;
+const IS_LIVE_BACKEND = !!GAS_WEB_APP_URL;
 const DEFAULT_TAB = 'form';
+const TOKEN_KEY = 'crm_session_token';
+const STAFF_KEY = 'crm_staff_name';
+const LAST_EMAIL_KEY = 'crm_last_email';
+
+/** ログイン切れを表すエラー（トースト表示を省略するために区別する） */
+class AuthError extends Error {}
+
+function errorMessage(e) {
+  return (e && e.message) ? e.message : String(e);
+}
 
 function gasRun(name, ...args) {
-  if (IS_GAS) {
-    return new Promise((resolve, reject) => {
-      google.script.run.withSuccessHandler(resolve).withFailureHandler(e => reject(e && e.message ? e.message : e))[name](...args);
-    });
-  }
-  if (GAS_WEB_APP_URL) {
-    return callGasWebApp(name, args);
-  }
+  if (IS_LIVE_BACKEND) return callGasWebApp(name, args);
   return new Promise((resolve, reject) => {
     setTimeout(() => {
       try {
         const fn = MockAPI[name];
-        if (!fn) { reject('プレビューモードではこの機能は未対応です: ' + name); return; }
+        if (!fn) { reject(new Error('プレビューモードではこの機能は未対応です: ' + name)); return; }
         resolve(fn(...args));
-      } catch (e) { reject(e.message || String(e)); }
+      } catch (e) { reject(e instanceof Error ? e : new Error(String(e))); }
     }, 220);
   });
 }
 
 /**
- * Code.gs 側の doPost（HTTP JSON APIエンドポイント）を fetch() で呼び出す。
- * Content-Type を text/plain;charset=utf-8 にすることで、ブラウザのCORS
- * プリフライト（OPTIONS）を発生させずに Apps Script Web App へ
- * クロスオリジンでアクセスできるようにしている。
+ * Code.gs の doPost を fetch() で呼び出す。セッショントークンを毎回添える。
+ * Content-Type を text/plain にすることで、CORS のプリフライトを発生させない。
  */
 async function callGasWebApp(name, args) {
   let response;
@@ -425,16 +440,20 @@ async function callGasWebApp(name, args) {
     response = await fetch(GAS_WEB_APP_URL, {
       method: 'POST',
       headers: { 'Content-Type': 'text/plain;charset=utf-8' },
-      body: JSON.stringify({ action: name, params: args })
+      body: JSON.stringify({ action: name, params: args, token: state.token })
     });
   } catch (networkErr) {
-    throw new Error('サーバーに接続できませんでした。GAS_WEB_APP_URLの設定とデプロイ状態をご確認ください。');
+    throw new Error('サーバーに接続できませんでした。通信環境をご確認ください。');
   }
   if (!response.ok) {
     throw new Error('サーバーエラーが発生しました（HTTP ' + response.status + '）。');
   }
   const json = await response.json();
   if (!json.success) {
+    if (json.code === 'AUTH_REQUIRED') {
+      handleSessionExpired();
+      throw new AuthError('ログインが必要です。');
+    }
     throw new Error(json.error || '不明なエラーが発生しました。');
   }
   return json.data;
@@ -534,8 +553,13 @@ let MOCK_LOGS = {
 };
 
 const MockAPI = {
+  login(email, password) {
+    if (!email || !password) throw new Error('メールアドレスとパスワードを入力してください。');
+    return { token: 'preview', staffName: MOCK_MASTER.staffList[0] };
+  },
+  logout() { return true; },
   getInitialData() {
-    return { masterLists: MOCK_MASTER };
+    return { staffName: state.currentUser, masterLists: MOCK_MASTER, announcements: MOCK_ANNOUNCEMENTS };
   },
   getAnnouncements() {
     return MOCK_ANNOUNCEMENTS;
@@ -563,7 +587,7 @@ const MockAPI = {
     const hasNA = !!formData.hasNA;
     const status = hasNA ? TASK_STATUS_PENDING : TASK_STATUS_DONE;
     const newLog = {
-      logId, date: formData.date, author: formData.author, studentCode: formData.studentCode, studentName: formData.studentName,
+      logId, date: formData.date, author: state.currentUser, studentCode: formData.studentCode, studentName: formData.studentName,
       genre: formData.genre, detail: formData.detail,
       nextAction: hasNA ? formData.nextAction : '', assignee: hasNA ? formData.assignee : '',
       dueDate: hasNA ? formData.dueDate : '', status: status, memo: formData.memo, niceCount: 0, comments: []
@@ -572,7 +596,8 @@ const MockAPI = {
     MOCK_LOGS[formData.studentCode].unshift(newLog);
     return { success: true, logId, hasNA, status };
   },
-  addComment(logId, commenter, content) {
+  addComment(logId, content) {
+    const commenter = state.currentUser;
     let target = null;
     Object.values(MOCK_LOGS).forEach(arr => arr.forEach(l => { if (l.logId === Number(logId)) target = l; }));
     if (target) {
@@ -581,7 +606,8 @@ const MockAPI = {
     }
     return [];
   },
-  getUncompletedTasks(staffName) {
+  getMyTasks() {
+    const staffName = state.currentUser;
     if (!staffName) return [];
     const target = String(staffName).trim();
     const tasks = [];
@@ -599,7 +625,8 @@ const MockAPI = {
     tasks.sort((a, b) => new Date(a.dueDate) - new Date(b.dueDate));
     return tasks;
   },
-  completeTask(rowId, comment, staffName) {
+  completeTask(rowId, comment) {
+    const staffName = state.currentUser;
     let target = null;
     Object.values(MOCK_LOGS).forEach(arr => arr.forEach(l => { if (l.logId === Number(rowId)) target = l; }));
     if (!target) throw new Error('対象のタスクが見つかりませんでした。');
@@ -610,7 +637,8 @@ const MockAPI = {
     target.comments.push({ author: staffName, datetime: now.toLocaleString('ja-JP'), content: noteText });
     return { success: true, rowId: Number(rowId), status: TASK_STATUS_DONE, note: noteText };
   },
-  getLeaderboardAndBadge(currentUser) {
+  getLeaderboardAndBadge() {
+    const currentUser = state.currentUser;
     const counts = {};
     Object.values(MOCK_LOGS).forEach(arr => arr.forEach(l => { counts[l.author] = (counts[l.author] || 0) + 1; }));
     const ranking = Object.keys(counts).map(name => ({ name, count: counts[name] })).sort((a, b) => b.count - a.count)
@@ -646,6 +674,7 @@ function todayStr() {
 }
 function loadLocal(key) { try { return localStorage.getItem(key); } catch (e) { return null; } }
 function saveLocal(key, val) { try { localStorage.setItem(key, val); } catch (e) {} }
+function removeLocal(key) { try { localStorage.removeItem(key); } catch (e) {} }
 function showLoading(show) { document.getElementById('loading-overlay').classList.toggle('hidden', !show); }
 function showToast(message, type) {
   const wrap = document.getElementById('toast-wrap');
@@ -686,15 +715,19 @@ function getNextBadgeInfo(total) {
  * アプリ状態
  * -------------------------------------------------------------------------- */
 const state = {
-  currentUser: loadLocal('crm_current_user') || null,
+  token: loadLocal(TOKEN_KEY) || null,
+  currentUser: loadLocal(STAFF_KEY) || null,
   masterLists: { staffList: [], genreList: [], genreTemplates: {} },
   announcements: [],
   selectedStudentForm: null,
   appStarted: false,
   searchDebounceTimer: null,
   studentNameDebounceTimer: null,
-  pendingTaskRowId: null
+  pendingTaskRowId: null,
+  studentNameSeq: 0,
+  mainSearchSeq: 0
 };
+removeLocal('crm_current_user'); // 旧バージョン（自己申告方式）の保存値を削除
 
 /* ----------------------------------------------------------------------------
  * タブ切替（PCサイドバー／モバイル下部タブ共通）
@@ -772,36 +805,93 @@ function applyDefaultAssignee() {
     if (opt.value === state.currentUser) { sel.value = state.currentUser; break; }
   }
 }
-function openUserModal(forced) {
-  const modal = document.getElementById('user-modal');
-  const closeBtn = document.getElementById('user-modal-close');
-  closeBtn.classList.toggle('hidden', !!forced);
-
-  const list = document.getElementById('user-modal-list');
-  list.innerHTML = state.masterLists.staffList.map(name => `
-    <button class="user-pick w-full text-left px-3 py-2.5 rounded-xl border ${name === state.currentUser ? 'border-main bg-light/40 font-bold text-dark' : 'border-light text-dark/70'}" data-name="${escapeHtml(name)}">
-      ${escapeHtml(name)}
-    </button>`).join('');
-
-  list.querySelectorAll('.user-pick').forEach(btn => btn.addEventListener('click', () => {
-    state.currentUser = btn.dataset.name;
-    saveLocal('crm_current_user', state.currentUser);
-    updateUserChip();
-    updateAuthorDisplay();
-    applyDefaultAssignee();
-    document.getElementById('user-modal').classList.add('hidden');
-    showToast(`「${state.currentUser}」として利用します`, 'success');
-    if (!state.appStarted) {
-      state.appStarted = true;
-      switchTab(DEFAULT_TAB);
-    }
-  }));
-
-  modal.classList.remove('hidden');
+function setSession(token, staffName) {
+  state.token = token;
+  state.currentUser = staffName;
+  saveLocal(TOKEN_KEY, token);
+  saveLocal(STAFF_KEY, staffName);
+  updateUserChip();
+  updateAuthorDisplay();
 }
-document.getElementById('mobile-user-chip').addEventListener('click', () => openUserModal(false));
-document.getElementById('sidebar-user-chip').addEventListener('click', () => openUserModal(false));
-document.getElementById('user-modal-close').addEventListener('click', () => document.getElementById('user-modal').classList.add('hidden'));
+function clearSession() {
+  state.token = null;
+  state.currentUser = null;
+  removeLocal(TOKEN_KEY);
+  removeLocal(STAFF_KEY);
+  updateUserChip();
+  updateAuthorDisplay();
+}
+
+function openLoginModal() {
+  const emailInput = document.getElementById('login-email');
+  if (!emailInput.value) emailInput.value = loadLocal(LAST_EMAIL_KEY) || '';
+  document.getElementById('login-password').value = '';
+  document.getElementById('login-error').classList.add('hidden');
+  document.getElementById('login-modal').classList.remove('hidden');
+  setTimeout(() => (emailInput.value ? document.getElementById('login-password') : emailInput).focus(), 60);
+}
+function closeLoginModal() {
+  document.getElementById('login-modal').classList.add('hidden');
+}
+
+/** サーバーから「ログインが必要」と返ってきたとき。入力中のフォーム内容は消さない */
+function handleSessionExpired() {
+  const alreadyOpen = !document.getElementById('login-modal').classList.contains('hidden');
+  clearSession();
+  if (alreadyOpen) return;
+  showLoading(false);
+  showToast('ログインの有効期限が切れました。もう一度ログインしてください。', 'error');
+  openLoginModal();
+}
+
+document.getElementById('login-form').addEventListener('submit', async e => {
+  e.preventDefault();
+  const email = document.getElementById('login-email').value.trim();
+  const password = document.getElementById('login-password').value;
+  const errEl = document.getElementById('login-error');
+  const btn = document.getElementById('login-submit');
+  errEl.classList.add('hidden');
+  if (!email || !password) {
+    errEl.textContent = 'メールアドレスとパスワードを入力してください。';
+    errEl.classList.remove('hidden');
+    return;
+  }
+  btn.disabled = true;
+  btn.textContent = 'ログイン中...';
+  try {
+    const res = await gasRun('login', email, password);
+    setSession(res.token, res.staffName);
+    saveLocal(LAST_EMAIL_KEY, email);
+    closeLoginModal();
+    showToast(`${res.staffName}としてログインしました`, 'success');
+    if (!state.appStarted) {
+      await startApp();
+    } else {
+      applyDefaultAssignee();
+    }
+  } catch (err) {
+    errEl.textContent = errorMessage(err);
+    errEl.classList.remove('hidden');
+  } finally {
+    btn.disabled = false;
+    btn.textContent = 'ログイン';
+  }
+});
+
+function openAccountModal() {
+  if (!state.token) { openLoginModal(); return; }
+  document.getElementById('account-name').textContent = state.currentUser || '';
+  document.getElementById('account-modal').classList.remove('hidden');
+}
+document.getElementById('mobile-user-chip').addEventListener('click', openAccountModal);
+document.getElementById('sidebar-user-chip').addEventListener('click', openAccountModal);
+document.getElementById('account-close').addEventListener('click', () => document.getElementById('account-modal').classList.add('hidden'));
+document.getElementById('account-logout').addEventListener('click', async () => {
+  document.getElementById('account-modal').classList.add('hidden');
+  try { await gasRun('logout'); } catch (e) { /* ログアウトはサーバー側の失敗を無視して進める */ }
+  clearSession();
+  openLoginModal();
+});
 
 /* ----------------------------------------------------------------------------
  * 1. 入力フォーム
@@ -840,14 +930,17 @@ async function runStudentNameSearch() {
   const statusArea = document.getElementById('f-student-status');
   if (!name.trim()) { statusArea.innerHTML = ''; return; }
   statusArea.innerHTML = `<p class="text-[11px] text-dark/40">検索中...</p>`;
+  const seq = ++state.studentNameSeq;
   try {
     const results = await gasRun('searchStudentsByName', name);
+    if (seq !== state.studentNameSeq) return; // 古い検索結果は捨てる
     renderStudentNameStatus(results);
-  } catch (err) { showToast(String(err), 'error'); }
+  } catch (err) { if (err instanceof AuthError) return; showToast(errorMessage(err), 'error'); }
 }
 
 document.getElementById('f-student-name').addEventListener('input', e => {
   clearTimeout(state.studentNameDebounceTimer);
+  state.studentNameSeq++;
   state.selectedStudentForm = null;
   const name = e.target.value;
   const statusArea = document.getElementById('f-student-status');
@@ -934,7 +1027,6 @@ function collectFormData() {
   const hasNA = document.getElementById('f-has-na').checked;
   return {
     date: document.getElementById('f-date').value,
-    author: state.currentUser,
     studentCode: state.selectedStudentForm ? state.selectedStudentForm.studentCode : '',
     studentName: state.selectedStudentForm ? state.selectedStudentForm.studentName : document.getElementById('f-student-name').value,
     genre: document.getElementById('f-genre').value,
@@ -947,7 +1039,7 @@ function collectFormData() {
   };
 }
 function validateForm(formData) {
-  if (!state.currentUser) return '記入者が設定されていません。担当者を選択してください。';
+  if (!state.token) return 'ログインしてください。';
   if (!formData.studentCode) return '生徒氏名を確定してください（候補が複数ある場合は一覧から選択してください）。';
   if (!formData.genre) return 'ジャンルを選択してください。';
   if (formData.hasNA && !formData.nextAction.trim()) return 'Next Actionの内容を入力してください。';
@@ -970,7 +1062,7 @@ document.getElementById('btn-save').addEventListener('click', async () => {
     await gasRun('submitLog', formData);
     showToast('保存しました', 'success');
     resetForm();
-  } catch (e) { showToast('保存に失敗しました: ' + e, 'error'); }
+  } catch (e) { if (e instanceof AuthError) return; showToast('保存に失敗しました: ' + errorMessage(e), 'error'); }
   finally { showLoading(false); }
 });
 
@@ -982,14 +1074,17 @@ async function runMainSearch() {
   const kw = document.getElementById('search-input').value;
   document.getElementById('student-detail-wrap').classList.add('hidden');
   if (!kw.trim()) { document.getElementById('search-results').innerHTML = ''; return; }
+  const seq = ++state.mainSearchSeq;
   try {
     const results = await gasRun('searchStudents', kw);
+    if (seq !== state.mainSearchSeq) return; // 古い検索結果は捨てる
     renderSearchResults(results);
-  } catch (err) { showToast(String(err), 'error'); }
+  } catch (err) { if (err instanceof AuthError) return; showToast(errorMessage(err), 'error'); }
 }
 
 document.getElementById('search-input').addEventListener('input', e => {
   clearTimeout(state.searchDebounceTimer);
+  state.mainSearchSeq++;
   const kw = e.target.value;
   document.getElementById('student-detail-wrap').classList.add('hidden');
   if (!kw.trim()) { document.getElementById('search-results').innerHTML = ''; return; }
@@ -1030,7 +1125,7 @@ async function selectStudent(studentCode) {
     document.getElementById('student-detail-wrap').classList.remove('hidden');
     document.getElementById('search-results').innerHTML = '';
     document.getElementById('search-input').value = '';
-  } catch (e) { showToast('取得に失敗しました: ' + e, 'error'); }
+  } catch (e) { if (e instanceof AuthError) return; showToast('取得に失敗しました: ' + errorMessage(e), 'error'); }
   finally { showLoading(false); }
 }
 
@@ -1176,14 +1271,14 @@ function bindLogCardEvents(scopeEl, studentCode) {
       const ta = card.querySelector('.comment-text');
       const content = ta.value.trim();
       if (!content) { showToast('コメント内容を入力してください', 'error'); return; }
-      if (!state.currentUser) { openUserModal(false); return; }
+      if (!state.token) { openLoginModal(); return; }
       showLoading(true);
       try {
-        await gasRun('addComment', logId, state.currentUser, content);
+        await gasRun('addComment', logId, content);
         const detail = await gasRun('getStudentDetail', studentCode);
         renderStudentDetail(detail);
         showToast('コメントを追加しました', 'success');
-      } catch (e) { showToast('コメント送信に失敗しました: ' + e, 'error'); }
+      } catch (e) { if (e instanceof AuthError) return; showToast('コメント送信に失敗しました: ' + errorMessage(e), 'error'); }
       finally { showLoading(false); }
     });
   });
@@ -1193,13 +1288,13 @@ function bindLogCardEvents(scopeEl, studentCode) {
  * 3. タスク管理（自分に割り振られたタスクのみ表示）
  * -------------------------------------------------------------------------- */
 async function loadTasks() {
-  if (!state.currentUser) { openUserModal(false); return; }
+  if (!state.token) { openLoginModal(); return; }
   const wrap = document.getElementById('task-list');
   showLoading(true);
   try {
-    const tasks = await gasRun('getUncompletedTasks', state.currentUser);
+    const tasks = await gasRun('getMyTasks');
     renderTasks(tasks);
-  } catch (e) { showToast('タスクの取得に失敗しました: ' + e, 'error'); }
+  } catch (e) { if (e instanceof AuthError) return; showToast('タスクの取得に失敗しました: ' + errorMessage(e), 'error'); }
   finally { showLoading(false); }
 }
 
@@ -1255,17 +1350,17 @@ document.getElementById('task-complete-cancel').addEventListener('click', () => 
 });
 document.getElementById('task-complete-confirm').addEventListener('click', async () => {
   if (!state.pendingTaskRowId) return;
-  if (!state.currentUser) { openUserModal(false); return; }
+  if (!state.token) { openLoginModal(); return; }
   const comment = document.getElementById('task-complete-comment').value.trim();
   const rowId = state.pendingTaskRowId;
   document.getElementById('task-complete-modal').classList.add('hidden');
   showLoading(true);
   try {
-    await gasRun('completeTask', rowId, comment, state.currentUser);
+    await gasRun('completeTask', rowId, comment);
     showToast('タスクを完了にしました', 'success');
     state.pendingTaskRowId = null;
     loadTasks();
-  } catch (e) { showToast('完了処理に失敗しました: ' + e, 'error'); }
+  } catch (e) { if (e instanceof AuthError) return; showToast('完了処理に失敗しました: ' + errorMessage(e), 'error'); }
   finally { showLoading(false); }
 });
 
@@ -1273,12 +1368,12 @@ document.getElementById('task-complete-confirm').addEventListener('click', async
  * 4. 入力アワード
  * -------------------------------------------------------------------------- */
 async function loadAward() {
-  if (!state.currentUser) { openUserModal(false); return; }
+  if (!state.token) { openLoginModal(); return; }
   showLoading(true);
   try {
-    const data = await gasRun('getLeaderboardAndBadge', state.currentUser);
+    const data = await gasRun('getLeaderboardAndBadge');
     renderAward(data);
-  } catch (e) { showToast('アワード情報の取得に失敗しました: ' + e, 'error'); }
+  } catch (e) { if (e instanceof AuthError) return; showToast('アワード情報の取得に失敗しました: ' + errorMessage(e), 'error'); }
   finally { showLoading(false); }
 }
 
@@ -1354,7 +1449,7 @@ function renderAward(data) {
       const updated = await gasRun('addNiceLog', logId);
       card.querySelector('.nice-count').textContent = updated;
       showToast('ナイスログ！を送りました👍', 'success');
-    } catch (e) { showToast('送信に失敗しました: ' + e, 'error'); }
+    } catch (e) { if (e instanceof AuthError) return; showToast('送信に失敗しました: ' + errorMessage(e), 'error'); }
     finally { btn.disabled = false; }
   }));
 }
@@ -1386,40 +1481,45 @@ window.addEventListener('load', syncBottomNavPadding);
 /* ----------------------------------------------------------------------------
  * 初期化
  * -------------------------------------------------------------------------- */
-async function init() {
-  if (!IS_LIVE_BACKEND) document.getElementById('preview-banner').classList.remove('hidden');
+async function startApp() {
   showLoading(true);
   try {
-    const [data, announcements] = await Promise.all([
-      gasRun('getInitialData'),
-      gasRun('getAnnouncements')
-    ]);
+    const data = await gasRun('getInitialData');
     state.masterLists = data.masterLists;
-    state.announcements = announcements;
+    state.announcements = data.announcements || [];
+    if (data.staffName && data.staffName !== state.currentUser) {
+      state.currentUser = data.staffName;
+      saveLocal(STAFF_KEY, data.staffName);
+    }
 
     populateMasterSelects();
     renderAnnouncePage();
     updateAnnouncementBadge();
     document.getElementById('f-date').value = todayStr();
-
-    showLoading(false);
-
-    if (!state.currentUser) {
-      openUserModal(true);
-      syncBottomNavPadding();
-      return;
-    }
-
     updateUserChip();
     updateAuthorDisplay();
     applyDefaultAssignee();
+
     state.appStarted = true;
     switchTab(DEFAULT_TAB);
-    syncBottomNavPadding();
   } catch (e) {
+    if (!(e instanceof AuthError)) showToast('初期データの取得に失敗しました: ' + errorMessage(e), 'error');
+  } finally {
     showLoading(false);
-    showToast('初期データの取得に失敗しました: ' + e, 'error');
+    syncBottomNavPadding();
   }
+}
+
+function init() {
+  if (!IS_LIVE_BACKEND) document.getElementById('preview-banner').classList.remove('hidden');
+  updateUserChip();
+  updateAuthorDisplay();
+  if (!state.token) {
+    openLoginModal();
+    syncBottomNavPadding();
+    return;
+  }
+  startApp();
 }
 init();
 </script>
